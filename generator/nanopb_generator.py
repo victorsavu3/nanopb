@@ -1,4 +1,5 @@
 '''Generate header file for nanopb from a ProtoBuf FileDescriptorSet.'''
+nanopb_version = "nanopb-0.1.8-dev"
 
 try:
     import google.protobuf.descriptor_pb2 as descriptor
@@ -22,6 +23,16 @@ except:
     print
     raise
 
+
+
+
+
+
+# ---------------------------------------------------------------------------
+#                     Generation of single fields
+# ---------------------------------------------------------------------------
+
+import time
 import os.path
 
 # Values are tuple (c type, pb ltype)
@@ -62,6 +73,9 @@ class Names:
         else:
             raise ValueError("Name parts should be of type str")
     
+    def __eq__(self, other):
+        return isinstance(other, Names) and self.parts == other.parts
+    
 def names_from_type_name(type_name):
     '''Parse Names() from FieldDescriptorProto type_name'''
     if type_name[0] != '.':
@@ -69,19 +83,27 @@ def names_from_type_name(type_name):
     return Names(type_name[1:].split('.'))
 
 class Enum:
-    def __init__(self, names, desc):
+    def __init__(self, names, desc, enum_options):
         '''desc is EnumDescriptorProto'''
+        
+        self.options = enum_options
         self.names = names + desc.name
-        self.values = [(self.names + x.name, x.number) for x in desc.value]
+        
+        if enum_options.long_names:
+            self.values = [(self.names + x.name, x.number) for x in desc.value]            
+        else:
+            self.values = [(names + x.name, x.number) for x in desc.value] 
+        
+        self.value_longnames = [self.names + x.name for x in desc.value]
     
     def __str__(self):
-        result = 'typedef enum {\n'
+        result = 'typedef enum _%s {\n' % self.names
         result += ',\n'.join(["    %s = %d" % x for x in self.values])
         result += '\n} %s;' % self.names
         return result
 
 class Field:
-    def __init__(self, struct_name, desc):
+    def __init__(self, struct_name, desc, field_options):
         '''desc is FieldDescriptorProto'''
         self.tag = desc.number
         self.struct_name = struct_name
@@ -91,28 +113,27 @@ class Field:
         self.max_count = None
         self.array_decl = ""
         
-        # Parse nanopb-specific field options
-        if desc.options.HasExtension(nanopb_pb2.nanopb):
-            ext = desc.options.Extensions[nanopb_pb2.nanopb]
-            if ext.HasField("max_size"):
-                self.max_size = ext.max_size
-            if ext.HasField("max_count"):
-                self.max_count = ext.max_count
+        # Parse field options
+        if field_options.HasField("max_size"):
+            self.max_size = field_options.max_size
+        
+        if field_options.HasField("max_count"):
+            self.max_count = field_options.max_count
         
         if desc.HasField('default_value'):
             self.default = desc.default_value
-        
+           
         # Decide HTYPE
         # HTYPE is the high-order nibble of nanopb field description,
         # defining whether value is required/optional/repeated.
-        is_callback = False
+        can_be_static = True
         if desc.label == FieldD.LABEL_REQUIRED:
             self.htype = 'PB_HTYPE_REQUIRED'
         elif desc.label == FieldD.LABEL_OPTIONAL:
             self.htype = 'PB_HTYPE_OPTIONAL'
         elif desc.label == FieldD.LABEL_REPEATED:
             if self.max_count is None:
-                is_callback = True
+                can_be_static = False
             else:
                 self.htype = 'PB_HTYPE_ARRAY'
                 self.array_decl = '[%d]' % self.max_count
@@ -133,14 +154,14 @@ class Field:
         elif desc.type == FieldD.TYPE_STRING:
             self.ltype = 'PB_LTYPE_STRING'
             if self.max_size is None:
-                is_callback = True
+                can_be_static = False
             else:
                 self.ctype = 'char'
                 self.array_decl += '[%d]' % self.max_size
         elif desc.type == FieldD.TYPE_BYTES:
             self.ltype = 'PB_LTYPE_BYTES'
             if self.max_size is None:
-                is_callback = True
+                can_be_static = False
             else:
                 self.ctype = self.struct_name + self.name + 't'
         elif desc.type == FieldD.TYPE_MESSAGE:
@@ -149,7 +170,16 @@ class Field:
         else:
             raise NotImplementedError(desc.type)
         
-        if is_callback:
+        if field_options.type == nanopb_pb2.FT_DEFAULT:
+            if can_be_static:
+                field_options.type = nanopb_pb2.FT_STATIC
+            else:
+                field_options.type = nanopb_pb2.FT_CALLBACK
+        
+        if field_options.type == nanopb_pb2.FT_STATIC and not can_be_static:
+            raise Exception("Field %s is defined as static, but max_size or max_count is not given." % self.name)
+        
+        if field_options.type == nanopb_pb2.FT_CALLBACK:
             self.htype = 'PB_HTYPE_CALLBACK'
             self.ctype = 'pb_callback_t'
             self.array_decl = ''
@@ -264,10 +294,19 @@ class Field:
         return max(self.tag, self.max_size, self.max_count)        
 
 
+
+
+
+
+# ---------------------------------------------------------------------------
+#                   Generation of messages (structures)
+# ---------------------------------------------------------------------------
+
+
 class Message:
-    def __init__(self, names, desc):
+    def __init__(self, names, desc, message_options):
         self.name = names
-        self.fields = [Field(self.name, f) for f in desc.field]
+        self.fields = [Field(self.name, f, get_nanopb_suboptions(f, message_options)) for f in desc.field]
         self.ordered_fields = self.fields[:]
         self.ordered_fields.sort()
 
@@ -276,7 +315,7 @@ class Message:
         return [str(field.ctype) for field in self.fields]
     
     def __str__(self):
-        result = 'typedef struct {\n'
+        result = 'typedef struct _%s {\n' % self.name
         result += '\n'.join([str(f) for f in self.ordered_fields])
         result += '\n} %s;' % self.name
         return result
@@ -313,6 +352,16 @@ class Message:
         result += '    PB_LAST_FIELD\n};'
         return result
 
+
+
+
+
+
+# ---------------------------------------------------------------------------
+#                    Processing of entire .proto files
+# ---------------------------------------------------------------------------
+
+
 def iterate_messages(desc, names = Names()):
     '''Recursively find all messages. For each, yield name, DescriptorProto.'''
     if hasattr(desc, 'message_type'):
@@ -327,7 +376,7 @@ def iterate_messages(desc, names = Names()):
         for x in iterate_messages(submsg, sub_names):
             yield x
 
-def parse_file(fdesc):
+def parse_file(fdesc, file_options):
     '''Takes a FileDescriptorProto and returns tuple (enum, messages).'''
     
     enums = []
@@ -339,12 +388,24 @@ def parse_file(fdesc):
         base_name = Names()
     
     for enum in fdesc.enum_type:
-        enums.append(Enum(base_name, enum))
+        enum_options = get_nanopb_suboptions(enum, file_options)
+        enums.append(Enum(base_name, enum, enum_options))
     
     for names, message in iterate_messages(fdesc, base_name):
-        messages.append(Message(names, message))
+        message_options = get_nanopb_suboptions(message, file_options)
+        messages.append(Message(names, message, message_options))
         for enum in message.enum_type:
-            enums.append(Enum(names, enum))
+            enum_options = get_nanopb_suboptions(enum, message_options)
+            enums.append(Enum(names, enum, enum_options))
+    
+    # Fix field default values where enum short names are used.
+    for enum in enums:
+        if not enum.options.long_names:
+            for message in messages:
+                for field in message.fields:
+                    if field.default in enum.value_longnames:
+                        idx = enum.value_longnames.index(field.default)
+                        field.default = enum.values[idx][0]
     
     return enums, messages
 
@@ -385,6 +446,7 @@ def generate_header(dependencies, headername, enums, messages):
     '''
     
     yield '/* Automatically generated nanopb header */\n'
+    yield '/* Generated by %s at %s. */\n\n' % (nanopb_version, time.asctime())
     
     symbol = headername.replace('.', '_').upper()
     yield '#ifndef _PB_%s_\n' % symbol
@@ -394,7 +456,10 @@ def generate_header(dependencies, headername, enums, messages):
     for dependency in dependencies:
         noext = os.path.splitext(dependency)[0]
         yield '#include "%s.pb.h"\n' % noext
-    yield '\n'
+    
+    yield '#ifdef __cplusplus\n'
+    yield 'extern "C" {\n'
+    yield '#endif\n\n'
     
     yield '/* Enum definitions */\n'
     for enum in enums:
@@ -428,7 +493,9 @@ def generate_header(dependencies, headername, enums, messages):
     worst = 0
     worst_field = ''
     checks = []
+    checks_msgnames = []
     for msg in messages:
+        checks_msgnames.append(msg.name)
         for field in msg.fields:
             status = field.largest_field_value()
             if isinstance(status, (str, unicode)):
@@ -446,7 +513,8 @@ def generate_header(dependencies, headername, enums, messages):
                 yield '#error Field descriptor for %s is too large. Define PB_FIELD_16BIT to fix this.\n' % worst_field
             else:
                 assertion = ' && '.join(str(c) + ' < 256' for c in checks)
-                yield 'STATIC_ASSERT((%s), YOU_MUST_DEFINE_PB_FIELD_16BIT)\n' % assertion
+                msgs = '_'.join(str(n) for n in checks_msgnames)
+                yield 'STATIC_ASSERT((%s), YOU_MUST_DEFINE_PB_FIELD_16BIT_FOR_MESSAGES_%s)\n'%(assertion,msgs)
             yield '#endif\n\n'
         
         if worst > 65535 or checks:
@@ -455,8 +523,13 @@ def generate_header(dependencies, headername, enums, messages):
                 yield '#error Field descriptor for %s is too large. Define PB_FIELD_32BIT to fix this.\n' % worst_field
             else:
                 assertion = ' && '.join(str(c) + ' < 65536' for c in checks)
-                yield 'STATIC_ASSERT((%s), YOU_MUST_DEFINE_PB_FIELD_32BIT)\n' % assertion
+                msgs = '_'.join(str(n) for n in checks_msgnames)
+                yield 'STATIC_ASSERT((%s), YOU_MUST_DEFINE_PB_FIELD_32BIT_FOR_MESSAGES_%s)\n'%(assertion,msgs)
             yield '#endif\n'
+    
+    yield '\n#ifdef __cplusplus\n'
+    yield '} /* extern "C" */\n'
+    yield '#endif\n'
     
     # End of header
     yield '\n#endif\n'
@@ -465,6 +538,7 @@ def generate_source(headername, enums, messages):
     '''Generate content for a source file.'''
     
     yield '/* Automatically generated nanopb constant definitions */\n'
+    yield '/* Generated by %s at %s. */\n\n' % (nanopb_version, time.asctime())
     yield '#include "%s"\n\n' % headername
     
     for msg in messages:
@@ -475,39 +549,105 @@ def generate_source(headername, enums, messages):
     for msg in messages:
         yield msg.fields_definition() + '\n\n'
 
+
+
+# ---------------------------------------------------------------------------
+#                         Command line interface
+# ---------------------------------------------------------------------------
+
+import sys
+import os.path    
+from optparse import OptionParser
+import google.protobuf.text_format as text_format
+
+optparser = OptionParser(
+    usage = "Usage: nanopb_generator.py [options] file.pb ...",
+    epilog = "Compile file.pb from file.proto by: 'protoc -ofile.pb file.proto'. " +
+             "Output will be written to file.pb.h and file.pb.c.")
+optparser.add_option("-x", dest="exclude", metavar="FILE", action="append", default=[],
+    help="Exclude file from generated #include list.")
+optparser.add_option("-q", "--quiet", dest="quiet", action="store_true", default=False,
+    help="Don't print anything except errors.")
+optparser.add_option("-v", "--verbose", dest="verbose", action="store_true", default=False,
+    help="Print more information.")
+optparser.add_option("-s", dest="settings", metavar="OPTION:VALUE", action="append", default=[],
+    help="Set generator option (max_size, max_count etc.).")
+
+def get_nanopb_suboptions(subdesc, options):
+    '''Get copy of options, and merge information from subdesc.'''
+    new_options = nanopb_pb2.NanoPBOptions()
+    new_options.CopyFrom(options)
+    
+    if isinstance(subdesc.options, descriptor.FieldOptions):
+        ext_type = nanopb_pb2.nanopb
+    elif isinstance(subdesc.options, descriptor.FileOptions):
+        ext_type = nanopb_pb2.nanopb_fileopt
+    elif isinstance(subdesc.options, descriptor.MessageOptions):
+        ext_type = nanopb_pb2.nanopb_msgopt
+    elif isinstance(subdesc.options, descriptor.EnumOptions):
+        ext_type = nanopb_pb2.nanopb_enumopt
+    else:
+        raise Exception("Unknown options type")
+    
+    if subdesc.options.HasExtension(ext_type):
+        ext = subdesc.options.Extensions[ext_type]
+        new_options.MergeFrom(ext)
+    
+    return new_options
+
+def process(filenames, options):
+    '''Process the files given on the command line.'''
+    
+    if not filenames:
+        optparser.print_help()
+        return False
+    
+    if options.quiet:
+        options.verbose = False
+    
+    toplevel_options = nanopb_pb2.NanoPBOptions()
+    for s in options.settings:
+        text_format.Merge(s, toplevel_options)
+    
+    for filename in filenames:
+        data = open(filename, 'rb').read()
+        fdesc = descriptor.FileDescriptorSet.FromString(data)
+        
+        file_options = get_nanopb_suboptions(fdesc.file[0], toplevel_options)
+        
+        if options.verbose:
+            print "Options for " + filename + ":"
+            print text_format.MessageToString(file_options)
+        
+        enums, messages = parse_file(fdesc.file[0], file_options)
+        
+        noext = os.path.splitext(filename)[0]
+        headername = noext + '.pb.h'
+        sourcename = noext + '.pb.c'
+        headerbasename = os.path.basename(headername)
+        
+        if not options.quiet:
+            print "Writing to " + headername + " and " + sourcename
+        
+        # List of .proto files that should not be included in the C header file
+        # even if they are mentioned in the source .proto.
+        excludes = ['nanopb.proto', 'google/protobuf/descriptor.proto'] + options.exclude
+        dependencies = [d for d in fdesc.file[0].dependency if d not in excludes]
+        
+        header = open(headername, 'w')
+        for part in generate_header(dependencies, headerbasename, enums, messages):
+            header.write(part)
+
+        source = open(sourcename, 'w')
+        for part in generate_source(headerbasename, enums, messages):
+            source.write(part)
+
+    return True
+
 if __name__ == '__main__':
-    import sys
-    import os.path
+    options, filenames = optparser.parse_args()
+    status = process(filenames, options)
     
-    if len(sys.argv) != 2:
-        print "Usage: " + sys.argv[0] + " file.pb"
-        print "where file.pb has been compiled from .proto by:"
-        print "protoc -ofile.pb file.proto"
-        print "Output fill be written to file.pb.h and file.pb.c"
+    if not status:
         sys.exit(1)
-    
-    data = open(sys.argv[1], 'rb').read()
-    fdesc = descriptor.FileDescriptorSet.FromString(data)
-    enums, messages = parse_file(fdesc.file[0])
-    
-    noext = os.path.splitext(sys.argv[1])[0]
-    headername = noext + '.pb.h'
-    sourcename = noext + '.pb.c'
-    headerbasename = os.path.basename(headername)
-    
-    print "Writing to " + headername + " and " + sourcename
-    
-    # List of .proto files that should not be included in the C header file
-    # even if they are mentioned in the source .proto.
-    excludes = ['nanopb.proto', 'google/protobuf/descriptor.proto']
-    dependencies = [d for d in fdesc.file[0].dependency if d not in excludes]
-    
-    header = open(headername, 'w')
-    for part in generate_header(dependencies, headerbasename, enums, messages):
-        header.write(part)
-
-    source = open(sourcename, 'w')
-    for part in generate_source(headerbasename, enums, messages):
-        source.write(part)
-
     

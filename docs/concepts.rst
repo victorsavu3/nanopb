@@ -38,6 +38,20 @@ This file, in turn, requires the file *google/protobuf/descriptor.proto*. This i
 
     protoc -I/usr/include -Inanopb/generator -I. -omessage.pb message.proto
 
+The options can be defined in file, message and field scopes::
+
+    option (nanopb_fileopt).max_size = 20; // File scope
+    message Message
+    {
+        option (nanopb_msgopt).max_size = 30; // Message scope
+        required string fieldsize = 1 [(nanopb).max_size = 40]; // Field scope
+    }
+
+It is also possible to give the options on command line, but then they will affect the whole file. For example::
+
+    user@host:~$ python ../generator/nanopb_generator.py -s 'max_size: 20' message.pb
+
+
 Streams
 =======
 
@@ -92,9 +106,8 @@ Writing to stdout::
 
 Input streams
 -------------
-For input streams, there are a few extra rules:
+For input streams, there is one extra rule:
 
-#) If buf is NULL, read from stream but don't store the data. This is used to skip unknown input.
 #) You don't need to know the length of the message in advance. After getting EOF error when reading, set bytes_left to 0 and return false. Pb_decode will detect this and if the EOF was in a proper position, it will return true.
 
 Here is the structure::

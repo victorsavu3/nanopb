@@ -1,15 +1,30 @@
-CFLAGS=-ansi -Wall -Werror -I .. -g -O0 --coverage
-LDFLAGS=--coverage
-DEPS=../pb_decode.h ../pb_encode.h ../pb.h person.pb.h callbacks.pb.h unittests.h unittestproto.pb.h alltypes.pb.h missing_fields.pb.h
-TESTS=test_decode1 test_encode1 decode_unittests encode_unittests test_no_messages
+CFLAGS=-ansi -Wall -Werror -I .. -g -O0
+DEPS=../pb_decode.h ../pb_encode.h ../pb.h person.pb.h \
+	callbacks2.pb.h callbacks.pb.h unittests.h unittestproto.pb.h \
+	alltypes.pb.h missing_fields.pb.h
+TESTS=  decode_unittests encode_unittests \
+	test_decode1 test_decode2 test_decode3 \
+	test_encode1 test_encode2 test_encode3 \
+	test_decode_callbacks test_encode_callbacks \
+	test_missing_fields test_no_messages \
+	test_multiple_files test_cxxcompile test_options
 
 # More strict checks for the core part of nanopb
-CFLAGS_CORE=-pedantic -Wextra -Wcast-qual -Wlogical-op -Wconversion
+CC_VERSION=$(shell $(CC) -v 2>&1)
+CFLAGS_CORE=
+ifneq (,$(findstring gcc,$(CC_VERSION)))
+	CFLAGS_CORE=-pedantic -Wextra -Wcast-qual -Wlogical-op -Wconversion
+        CFLAGS+=--coverage
+        LDFLAGS+=--coverage
+endif
+ifneq (,$(findstring clang,$(CC_VERSION)))
+	CFLAGS_CORE=-pedantic -Wextra -Wcast-qual -Wconversion
+endif
 
 all: breakpoints $(TESTS) run_unittests
 
 clean:
-	rm -f $(TESTS) person.pb* alltypes.pb* *.o *.gcda *.gcno
+	rm -f $(TESTS) person.pb* alltypes.pb* *.o *.gcda *.gcno *.pb.h *.pb.c
 
 %.pb.o: %.pb.c %.pb.h
 	$(CC) $(CFLAGS) $(CFLAGS_CORE) -c -o $@ $<
@@ -35,6 +50,7 @@ test_decode3: test_decode3.o pb_decode.o alltypes.pb.o
 test_encode1: test_encode1.o pb_encode.o person.pb.o
 test_encode2: test_encode2.o pb_encode.o person.pb.o
 test_encode3: test_encode3.o pb_encode.o alltypes.pb.o
+test_multiple_files: test_multiple_files.o pb_encode.o callbacks2.pb.o callbacks.pb.o
 test_decode_callbacks: test_decode_callbacks.o pb_decode.o callbacks.pb.o
 test_encode_callbacks: test_encode_callbacks.o pb_encode.o callbacks.pb.o
 test_missing_fields: test_missing_fields.o pb_encode.o pb_decode.o missing_fields.pb.o
@@ -55,7 +71,7 @@ coverage: run_unittests
 	gcov pb_encode.gcda
 	gcov pb_decode.gcda
 
-run_unittests: decode_unittests encode_unittests test_cxxcompile test_encode1 test_encode2 test_encode3 test_decode1 test_decode2 test_decode3 test_encode_callbacks test_decode_callbacks test_missing_fields
+run_unittests: $(TESTS)
 	rm -f *.gcda
 	
 	./decode_unittests > /dev/null
@@ -70,6 +86,9 @@ run_unittests: decode_unittests encode_unittests test_cxxcompile test_encode1 te
 	[ "`./test_encode2 | ./test_decode2`" = \
 	"`./test_encode2 | protoc --decode=Person -I. -I../generator -I/usr/include person.proto`" ]
 	
+	[ "`./test_decode2 < person_with_extra_field.pb`" = \
+	"`./test_encode2 | ./test_decode2`" ]
+	
 	[ "`./test_encode_callbacks | ./test_decode_callbacks`" = \
 	"`./test_encode_callbacks | protoc --decode=TestMessage callbacks.proto`" ]
 
@@ -78,6 +97,14 @@ run_unittests: decode_unittests encode_unittests test_cxxcompile test_encode1 te
 	./test_encode3 1 | protoc --decode=AllTypes -I. -I../generator -I/usr/include alltypes.proto >/dev/null
 	
 	./test_missing_fields
+
+test_options: options.pb.h options.expected options.pb.o
+	cat options.expected | while read -r p; do \
+	    if ! grep -q "$$p" $<; then \
+	        echo Expected: "$$p"; \
+	        exit 1; \
+	    fi \
+	done
 
 run_fuzztest: test_decode2
 	bash -c 'I=1; while true; do cat /dev/urandom | ./test_decode2 > /dev/null; I=$$(($$I+1)); echo -en "\r$$I"; done'

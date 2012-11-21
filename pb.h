@@ -6,6 +6,8 @@
  * see pb_encode.h or pb_decode.h
  */
 
+#define NANOPB_VERSION nanopb-0.1.8-dev
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -22,9 +24,13 @@
 #define UNUSED(x) (void)(x)
 #endif
 
-/* Compile-time assertion, used for checking compatible compilation options. */
+/* Compile-time assertion, used for checking compatible compilation options.
+ * If this fails on your compiler for some reason, use #define STATIC_ASSERT
+ * to disable it. */
 #ifndef STATIC_ASSERT
-#define STATIC_ASSERT(COND,MSG) typedef char static_assertion_##MSG[(COND)?1:-1];
+#define STATIC_ASSERT(COND,MSG) typedef char STATIC_ASSERT_MSG(MSG, __LINE__, __COUNTER__)[(COND)?1:-1];
+#define STATIC_ASSERT_MSG(MSG, LINE, COUNTER) STATIC_ASSERT_MSG_(MSG, LINE, COUNTER)
+#define STATIC_ASSERT_MSG_(MSG, LINE, COUNTER) static_assertion_##MSG##LINE##COUNTER
 #endif
 
 /* Number of required fields to keep track of
@@ -148,10 +154,12 @@ struct _pb_field_t {
  * It has the number of bytes in the beginning, and after that an array.
  * Note that actual structs used will have a different length of bytes array.
  */
-typedef struct {
+struct _pb_bytes_array_t {
     size_t size;
     uint8_t bytes[1];
-} pb_bytes_array_t;
+};
+
+typedef struct _pb_bytes_array_t pb_bytes_array_t;
 
 /* This structure is used for giving the callback function.
  * It is stored in the message structure and filled in by the method that

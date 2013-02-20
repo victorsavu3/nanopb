@@ -6,7 +6,7 @@
  * see pb_encode.h or pb_decode.h
  */
 
-#define NANOPB_VERSION nanopb-0.1.9-dev
+#define NANOPB_VERSION nanopb-0.1.9.1-dev
 
 #include <stdint.h>
 #include <stddef.h>
@@ -100,8 +100,8 @@ typedef enum {
     
     /* Works for all required/optional/repeated fields.
      * data_offset points to pb_callback_t structure.
-     * LTYPE should be 0 (it is ignored, but sometimes
-     * used to speculatively index an array). */
+     * LTYPE should be valid or 0 (it is ignored, but
+     * sometimes used to speculatively index an array). */
     PB_HTYPE_CALLBACK = 0x30,
     
     PB_HTYPE_MASK = 0xF0

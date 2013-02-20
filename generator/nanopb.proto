@@ -7,10 +7,13 @@
 
 import "google/protobuf/descriptor.proto";
 
+option java_package = "fi.kapsi.koti.jpa.nanopb";
+
 enum FieldType {
     FT_DEFAULT = 0; // Automatically decide field type, generate static field if possible.
     FT_CALLBACK = 1; // Always generate a callback field.
     FT_STATIC = 2; // Generate a static field or raise an exception if not possible.
+    FT_IGNORE = 3; // Ignore the field completely.
 }
 
 message NanoPBOptions {
@@ -25,15 +28,18 @@ message NanoPBOptions {
   
   // Use long names for enums, i.e. EnumName_EnumValue.
   optional bool long_names = 4 [default = true];
+  
+  // Add 'packed' attribute to generated structs.
+  optional bool packed_struct = 5 [default = false];
 }
 
 // Protocol Buffers extension number registry
-// --------------------------------                                                                                                            
-// Project:  Nanopb                                                                                                                            
-// Contact:  Petteri Aimonen <jpa@kapsi.fi>                                                                                                    
-// Web site: http://kapsi.fi/~jpa/nanopb                                                                                                       
-// Extensions: 1010 (all types)                                                                                                                
-// --------------------------------   
+// --------------------------------
+// Project:  Nanopb
+// Contact:  Petteri Aimonen <jpa@kapsi.fi>
+// Web site: http://kapsi.fi/~jpa/nanopb
+// Extensions: 1010 (all types)
+// --------------------------------
 
 extend google.protobuf.FileOptions {
     optional NanoPBOptions nanopb_fileopt = 1010;

@@ -39,16 +39,20 @@ static const pb_decoder_t PB_DECODERS[PB_LTYPES_COUNT] = {
 static bool checkreturn buf_read(pb_istream_t *stream, uint8_t *buf, size_t count)
 {
     uint8_t *source = (uint8_t*)stream->state;
+    stream->state = source + count;
     
     if (buf != NULL)
-        memcpy(buf, source, count);
+    {
+        while (count--)
+            *buf++ = *source++;
+    }
     
-    stream->state = source + count;
     return true;
 }
 
 bool checkreturn pb_read(pb_istream_t *stream, uint8_t *buf, size_t count)
 {
+#ifndef PB_BUFFER_ONLY
 	if (buf == NULL && stream->callback != buf_read)
 	{
 		/* Skip input bytes */
@@ -63,12 +67,18 @@ bool checkreturn pb_read(pb_istream_t *stream, uint8_t *buf, size_t count)
 		
 		return pb_read(stream, tmp, count);
 	}
+#endif
 
     if (stream->bytes_left < count)
         PB_RETURN_ERROR(stream, "end-of-stream");
     
+#ifndef PB_BUFFER_ONLY
     if (!stream->callback(stream, buf, count))
         PB_RETURN_ERROR(stream, "io error");
+#else
+    if (!buf_read(stream, buf, count))
+        return false;
+#endif
     
     stream->bytes_left -= count;
     return true;
@@ -77,7 +87,11 @@ bool checkreturn pb_read(pb_istream_t *stream, uint8_t *buf, size_t count)
 pb_istream_t pb_istream_from_buffer(uint8_t *buf, size_t bufsize)
 {
     pb_istream_t stream;
+#ifdef PB_BUFFER_ONLY
+    stream.callback = NULL;
+#else
     stream.callback = &buf_read;
+#endif
     stream.state = buf;
     stream.bytes_left = bufsize;
 #ifndef PB_NO_ERRMSG
@@ -92,28 +106,60 @@ pb_istream_t pb_istream_from_buffer(uint8_t *buf, size_t bufsize)
 
 static bool checkreturn pb_decode_varint32(pb_istream_t *stream, uint32_t *dest)
 {
-    uint64_t temp;
-    bool status = pb_decode_varint(stream, &temp);
-    *dest = (uint32_t)temp;
-    return status;
+    uint8_t byte;
+    uint32_t result;
+    
+    if (!pb_read(stream, &byte, 1))
+        return false;
+    
+    if (!(byte & 0x80))
+    {
+        /* Quick case, 1 byte value */
+        result = byte;
+    }
+    else
+    {
+        /* Multibyte case */
+        uint8_t bitpos = 7;
+        result = byte & 0x7F;
+        
+        do
+        {
+            if (bitpos >= 32)
+                PB_RETURN_ERROR(stream, "varint overflow");
+            
+            if (!pb_read(stream, &byte, 1))
+                return false;
+            
+            result |= (uint32_t)(byte & 0x7F) << bitpos;
+            bitpos = (uint8_t)(bitpos + 7);
+        } while (byte & 0x80);
+   }
+   
+   *dest = result;
+   return true;
 }
 
 bool checkreturn pb_decode_varint(pb_istream_t *stream, uint64_t *dest)
 {
     uint8_t byte;
-    int bitpos = 0;
-    *dest = 0;
+    uint8_t bitpos = 0;
+    uint64_t result = 0;
     
-    while (bitpos < 64 && pb_read(stream, &byte, 1))
+    do
     {
-        *dest |= (uint64_t)(byte & 0x7F) << bitpos;
-        bitpos += 7;
+        if (bitpos >= 64)
+            PB_RETURN_ERROR(stream, "varint overflow");
         
-        if (!(byte & 0x80))
-            return true;
-    }
+        if (!pb_read(stream, &byte, 1))
+            return false;
+
+        result |= (uint64_t)(byte & 0x7F) << bitpos;
+        bitpos = (uint8_t)(bitpos + 7);
+    } while (byte & 0x80);
     
-    PB_RETURN_ERROR(stream, "varint overflow");
+    *dest = result;
+    return true;
 }
 
 bool checkreturn pb_skip_varint(pb_istream_t *stream)
@@ -225,14 +271,18 @@ bool checkreturn pb_make_string_substream(pb_istream_t *stream, pb_istream_t *su
 void pb_close_string_substream(pb_istream_t *stream, pb_istream_t *substream)
 {
     stream->state = substream->state;
+
+#ifndef PB_NO_ERRMSG
+    stream->errmsg = substream->errmsg;
+#endif
 }
 
 /* Iterator for pb_field_t list */
 typedef struct {
     const pb_field_t *start; /* Start of the pb_field_t array */
     const pb_field_t *current; /* Current position of the iterator */
-    int field_index; /* Zero-based index of the field. */
-    int required_field_index; /* Zero-based index that counts only the required fields */
+    unsigned field_index; /* Zero-based index of the field. */
+    unsigned required_field_index; /* Zero-based index that counts only the required fields */
     void *dest_struct; /* Pointer to the destination structure to decode to */
     void *pData; /* Pointer where to store current field value */
     void *pSize; /* Pointer where to store the size of current array field */
@@ -278,7 +328,7 @@ static bool pb_field_next(pb_field_iterator_t *iter)
 
 static bool checkreturn pb_field_find(pb_field_iterator_t *iter, uint32_t tag)
 {
-    int start = iter->field_index;
+    unsigned start = iter->field_index;
     
     do {
         if (iter->current->tag == tag)
@@ -311,7 +361,7 @@ static bool checkreturn decode_field(pb_istream_t *stream, pb_wire_type_t wire_t
                 && PB_LTYPE(iter->current->type) <= PB_LTYPE_LAST_PACKABLE)
             {
                 /* Packed array */
-                bool status;
+                bool status = true;
                 size_t *size = (size_t*)iter->pSize;
                 pb_istream_t substream;
                 if (!pb_make_string_substream(stream, &substream))
@@ -321,11 +371,17 @@ static bool checkreturn decode_field(pb_istream_t *stream, pb_wire_type_t wire_t
                 {
                     void *pItem = (uint8_t*)iter->pData + iter->current->data_size * (*size);
                     if (!func(&substream, iter->current, pItem))
-                        return false;
+                    {
+                        status = false;
+                        break;
+                    }
                     (*size)++;
                 }
-                status = (substream.bytes_left == 0);
                 pb_close_string_substream(stream, &substream);
+                
+                if (substream.bytes_left != 0)
+                    PB_RETURN_ERROR(stream, "array overflow");
+                
                 return status;
             }
             else
@@ -473,15 +529,34 @@ bool checkreturn pb_decode_noinit(pb_istream_t *stream, const pb_field_t fields[
     }
     
     /* Check that all required fields were present. */
-    pb_field_init(&iter, fields, dest_struct);
-    do {
-        if (PB_HTYPE(iter.current->type) == PB_HTYPE_REQUIRED &&
-            iter.required_field_index < PB_MAX_REQUIRED_FIELDS &&
-            !(fields_seen[iter.required_field_index >> 3] & (1 << (iter.required_field_index & 7))))
+    {
+        /* First figure out the number of required fields by
+         * seeking to the end of the field array. Usually we
+         * are already close to end after decoding.
+         */
+        unsigned req_field_count;
+        pb_type_t last_type;
+        unsigned i;
+        do {
+            req_field_count = iter.required_field_index;
+            last_type = iter.current->type;
+        } while (pb_field_next(&iter));
+        
+        /* Fixup if last field was also required. */
+        if (PB_HTYPE(last_type) == PB_HTYPE_REQUIRED)
+            req_field_count++;
+        
+        /* Check the whole bytes */
+        for (i = 0; i < (req_field_count >> 3); i++)
         {
-            PB_RETURN_ERROR(stream, "missing required field");
+            if (fields_seen[i] != 0xFF)
+                PB_RETURN_ERROR(stream, "missing required field");
         }
-    } while (pb_field_next(&iter));
+        
+        /* Check the remaining bits */
+        if (fields_seen[req_field_count >> 3] != (0xFF >> (8 - (req_field_count & 7))))
+            PB_RETURN_ERROR(stream, "missing required field");
+    }
     
     return true;
 }

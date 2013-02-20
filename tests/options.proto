@@ -54,3 +54,20 @@ message Message5
     }
     required Enum2 field = 1 [default = EnumValue1];
 }
+
+// Packed structure
+message my_packed_struct
+{
+    option (nanopb_msgopt).packed_struct = true;
+    optional int32 myfield = 1;
+}
+
+// Message with ignored field
+// Note: doesn't really test if the field is missing in the output,
+// but atleast tests that the output compiles.
+message Message6
+{
+    required int32 field1 = 1;
+    optional int32 field2 = 2 [(nanopb).type = FT_IGNORE];
+}
+

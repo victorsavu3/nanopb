@@ -5,7 +5,7 @@
 #include <pb_encode.h>
 #include "callbacks.pb.h"
 
-bool encode_string(pb_ostream_t *stream, const pb_field_t *field, const void *arg)
+bool encode_string(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
     char *str = "Hello world!";
     
@@ -15,7 +15,7 @@ bool encode_string(pb_ostream_t *stream, const pb_field_t *field, const void *ar
     return pb_encode_string(stream, (uint8_t*)str, strlen(str));
 }
 
-bool encode_int32(pb_ostream_t *stream, const pb_field_t *field, const void *arg)
+bool encode_int32(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
     if (!pb_encode_tag_for_field(stream, field))
         return false;
@@ -23,7 +23,7 @@ bool encode_int32(pb_ostream_t *stream, const pb_field_t *field, const void *arg
     return pb_encode_varint(stream, 42);
 }
 
-bool encode_fixed32(pb_ostream_t *stream, const pb_field_t *field, const void *arg)
+bool encode_fixed32(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
     if (!pb_encode_tag_for_field(stream, field))
         return false;
@@ -32,13 +32,29 @@ bool encode_fixed32(pb_ostream_t *stream, const pb_field_t *field, const void *a
     return pb_encode_fixed32(stream, &value);
 }
 
-bool encode_fixed64(pb_ostream_t *stream, const pb_field_t *field, const void *arg)
+bool encode_fixed64(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
     if (!pb_encode_tag_for_field(stream, field))
         return false;
     
     uint64_t value = 42;
     return pb_encode_fixed64(stream, &value);
+}
+
+bool encode_repeatedstring(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+{
+    char *str[4] = {"Hello world!", "", "Test", "Test2"};
+    int i;
+    
+    for (i = 0; i < 4; i++)
+    {
+        if (!pb_encode_tag_for_field(stream, field))
+            return false;
+        
+        if (!pb_encode_string(stream, (uint8_t*)str[i], strlen(str[i])))
+            return false;
+    }
+    return true;
 }
 
 int main()
@@ -57,6 +73,8 @@ int main()
     testmessage.submsg.int32value.funcs.encode = &encode_int32;
     testmessage.submsg.fixed32value.funcs.encode = &encode_fixed32;
     testmessage.submsg.fixed64value.funcs.encode = &encode_fixed64;
+
+    testmessage.repeatedstring.funcs.encode = &encode_repeatedstring;
     
     if (!pb_encode(&stream, TestMessage_fields, &testmessage))
         return 1;

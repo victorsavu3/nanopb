@@ -15,11 +15,19 @@ CC_VERSION=$(shell $(CC) -v 2>&1)
 CFLAGS_CORE=
 ifneq (,$(findstring gcc,$(CC_VERSION)))
 	CFLAGS_CORE=-pedantic -Wextra -Wcast-qual -Wlogical-op -Wconversion
-        CFLAGS+=--coverage
-        LDFLAGS+=--coverage
+	CFLAGS+=--coverage -fstack-protector-all
+	LDFLAGS+=--coverage
 endif
 ifneq (,$(findstring clang,$(CC_VERSION)))
 	CFLAGS_CORE=-pedantic -Wextra -Wcast-qual -Wconversion
+endif
+
+# Also use mudflap if it is available
+# To enable, run with    make -B USE_MUDFLAP=y
+USE_MUDFLAP ?= n
+ifeq ($(USE_MUDFLAP),y)
+	CFLAGS += -fmudflap
+	LDFLAGS += -lmudflap -fmudflap
 endif
 
 all: breakpoints $(TESTS) run_unittests
@@ -127,5 +135,5 @@ test_options: options.pb.h options.expected options.pb.o
 	    fi \
 	done
 
-run_fuzztest: test_decode2
-	bash -c 'I=1; while true; do cat /dev/urandom | ./test_decode2 > /dev/null; I=$$(($$I+1)); echo -en "\r$$I"; done'
+run_fuzztest: test_decode3
+	bash -c 'ulimit -c unlimited; I=1; while true; do cat /dev/urandom | ./test_decode3 > /dev/null; I=$$(($$I+1)); echo -en "\r$$I"; done'
